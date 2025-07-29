@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Go WASM Face Detection</title>
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; margin-top: 50px; }
+        #preview { max-width: 300px; margin-top: 20px; border: 1px solid #ccc; }
+        #result { max-width: 256px; margin-top: 20px; border: 2px solid green; }
+    </style>
+</head>
+<body>
+    <h1>Go WASM + AI Face Cropper</h1>
+    <p>Select an image. A powerful AI model will find the face.</p>
+    <input type="file" id="imageInput" accept="image/*" disabled>
+    <hr>
+    <h3>Original Preview:</h3>
+    <img id="preview" src="" alt="Image Preview">
+    <h3>Result (Cropped WebP):</h3>
+    <div id="status"></div>
+    <img id="result" src="" alt="Processing Result">
+
+    <script src="wasm_exec.js"></script>
+    <script>
+        const status = document.getElementById('status');
+        const imageInput = document.getElementById('imageInput');
+        const previewImg = document.getElementById('preview');
+        const resultImg = document.getElementById('result');
+        status.textContent = 'Loading Application...';
+
+        let goReady = false;
+        let modelsReady = false;
+
+        function onGoWasmReady() {
+            console.log("Go WASM has signaled it is ready.");
+            goReady = true;
+            if (modelsReady) {
+                initializeApp();
+            }
+        }
+
+        function initializeApp() {
+            status.textContent = 'Ready. Select an image.';
+            imageInput.disabled = false;
+            console.log("Application is ready.");
+        }
+        
+        const go = new Go();
+        WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
+            .then(result => go.run(result.instance))
+            .catch(err => console.error("WASM loading error:", err));
+
+        faceapi.nets.tinyFaceDetector.loadFromUri('/models').then(() => {
+            console.log("AI Models Loaded.");
+            modelsReady = true;
+            if (goReady) {
+                initializeApp();
+            }
+        }).catch(err => console.error("Error loading AI models:", err));
+        
+        // NEW: Function to trigger a file download
+        function triggerDownload(blob, fileName) {
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            document.body.appendChild(a);
+
+            const url = window.URL.createObjectURL(blob);
+            a.href = url;
+            a.download = fileName;
+            a.click();
+
+            window.URL.revokeObjectURL(url);
+            a.remove();
+        }
+
+        imageInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            resultImg.src = '';
+            previewImg.src = URL.createObjectURL(file);
+            status.textContent = 'Detecting face with AI model...';
+
+            const detection = await faceapi.detectSingleFace(previewImg, new faceapi.TinyFaceDetectorOptions());
+
+            if (!detection) {
+                status.textContent = 'No face detected by the AI model.';
+                return;
+            }
+            
+            status.textContent = 'Face found! Cropping with Go/WASM...';
+            const { x, y, width, height } = detection.box;
+
+            const fileReader = new FileReader();
+            fileReader.onload = (event) => {
+                const imageData = new Uint8Array(event.target.result);
+                const resultWebpData = cropAndEncode(imageData, x, y, width, height);
+
+                if (resultWebpData) {
+                    const blob = new Blob([resultWebpData], { type: 'image/webp' });
+                    resultImg.src = URL.createObjectURL(blob);
+                    status.textContent = 'Success! File downloaded.';
+
+                    // NEW: Call the download function
+                    triggerDownload(blob, 'cropped_face.webp');
+                } else {
+                    status.textContent = 'Error during cropping in Go/WASM.';
+                }
+            };
+            fileReader.readAsArrayBuffer(file);
+        });
+    </script>
+</body>
+</html>
